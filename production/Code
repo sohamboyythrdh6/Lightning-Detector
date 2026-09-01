@@ -1,1 +1,572 @@
+/*
+   LIGHTNING STRIKE DETECTOR
+   --------------------------
+   MCU:
+     Seeed Studio XIAO ESP32-S3
 
+   SENSOR:
+     DFRobot SEN0290 / AS3935 / MA5532-AE
+
+   DISPLAY:
+     Waveshare 1.54" E-Paper Module B
+     200x200, Black/White/Red
+     V1 - NO V2 MARKING
+
+   OUTPUT:
+     Red LED
+     Passive buzzer through BC547
+
+   Libraries:
+     DFRobot_AS3935
+     GxEPD2
+     Adafruit GFX
+*/
+
+#include <Wire.h>
+#include <SPI.h>
+#include <DFRobot_AS3935_I2C.h>
+
+#include <GxEPD2_3C.h>
+#include <Adafruit_GFX.h>
+
+// --------------------------------------------------
+// XIAO ESP32-S3 PIN DEFINITIONS
+// --------------------------------------------------
+
+// I2C
+#define SDA_PIN       5       // D4
+#define SCL_PIN       6       // D5
+
+// SEN0290 IRQ
+#define LIGHTNING_IRQ 44      // D7
+
+// LED
+#define LED_PIN       43      // D6
+
+// BUZZER
+#define BUZZER_PIN    8       // D9
+
+// --------------------------------------------------
+// E-PAPER PINS
+// --------------------------------------------------
+
+#define EPD_CS        4       // D3
+#define EPD_DC        3       // D2
+#define EPD_RST       2       // D1
+#define EPD_BUSY      1       // D0
+
+#define EPD_SCK       7       // D8
+#define EPD_MOSI      9       // D10
+
+// --------------------------------------------------
+// AS3935 SETTINGS
+// --------------------------------------------------
+
+#define AS3935_I2C_ADDR AS3935_ADD3
+
+// Antenna tuning capacitor.
+// DFRobot example uses 96 pF.
+#define AS3935_CAPACITANCE 96
+
+// 0 = indoor
+// 1 = outdoor
+//
+// For an outdoor lightning detector use OUTDOORS.
+#define AS3935_MODE AS3935_OUTDOORS
+
+// Disturber detection enabled
+#define AS3935_DIST AS3935_DIST_EN
+
+// --------------------------------------------------
+// E-PAPER
+// --------------------------------------------------
+
+/*
+   GxEPD2_154c:
+   1.54" 3-color 200x200
+*/
+GxEPD2_3C<GxEPD2_154c, GxEPD2_154c::HEIGHT>
+display(
+  GxEPD2_154c(
+    EPD_CS,
+    EPD_DC,
+    EPD_RST,
+    EPD_BUSY
+  )
+);
+
+// --------------------------------------------------
+// LIGHTNING SENSOR
+// --------------------------------------------------
+
+volatile bool lightningInterrupt = false;
+
+DFRobot_AS3935_I2C lightningSensor(
+  LIGHTNING_IRQ,
+  AS3935_I2C_ADDR
+);
+
+// --------------------------------------------------
+// VARIABLES
+// --------------------------------------------------
+
+uint32_t strikeCount = 0;
+
+uint8_t lastDistance = 0;
+uint32_t lastIntensity = 0;
+
+bool alarmActive = false;
+
+unsigned long alarmStart = 0;
+
+// Keep display refreshes separated.
+// This display takes around 14 seconds for a full refresh.
+unsigned long lastDisplayUpdate = 0;
+
+const unsigned long DISPLAY_MIN_INTERVAL = 180000UL;
+// 180 seconds = 3 minutes
+
+// --------------------------------------------------
+// INTERRUPT
+// --------------------------------------------------
+
+void IRAM_ATTR lightningISR()
+{
+  lightningInterrupt = true;
+}
+
+// --------------------------------------------------
+// BUZZER
+// --------------------------------------------------
+
+void beepBuzzer()
+{
+  digitalWrite(BUZZER_PIN, HIGH);
+  digitalWrite(LED_PIN, HIGH);
+
+  delay(250);
+
+  digitalWrite(BUZZER_PIN, LOW);
+  digitalWrite(LED_PIN, LOW);
+
+  delay(150);
+
+  digitalWrite(BUZZER_PIN, HIGH);
+  digitalWrite(LED_PIN, HIGH);
+
+  delay(250);
+
+  digitalWrite(BUZZER_PIN, LOW);
+  digitalWrite(LED_PIN, LOW);
+}
+
+// --------------------------------------------------
+// DRAW NORMAL SCREEN
+// --------------------------------------------------
+
+void drawNormalScreen()
+{
+  display.setFullWindow();
+
+  display.firstPage();
+
+  do
+  {
+    display.fillScreen(GxEPD_WHITE);
+
+    display.setTextColor(GxEPD_BLACK);
+
+    // Title
+    display.setTextSize(2);
+    display.setCursor(15, 30);
+    display.print("LIGHTNING");
+
+    display.setCursor(15, 55);
+    display.print("DETECTOR");
+
+    // Divider
+    display.drawLine(
+      10,
+      65,
+      190,
+      65,
+      GxEPD_BLACK
+    );
+
+    // Status
+    display.setTextSize(1);
+    display.setCursor(15, 85);
+    display.print("STATUS:");
+
+    display.setTextSize(2);
+    display.setCursor(15, 108);
+    display.print("MONITORING");
+
+    // Strike count
+    display.setTextSize(1);
+    display.setCursor(15, 135);
+    display.print("STRIKES:");
+
+    display.setTextSize(2);
+    display.setCursor(85, 137);
+    display.print(strikeCount);
+
+    // Range
+    display.setTextSize(1);
+    display.setCursor(15, 165);
+    display.print("MAX RANGE: 40 km");
+
+    // Bottom
+    display.setCursor(15, 190);
+    display.print("SEN0290");
+
+  }
+  while (display.nextPage());
+
+  display.hibernate();
+
+  lastDisplayUpdate = millis();
+}
+
+// --------------------------------------------------
+// DRAW LIGHTNING ALERT
+// --------------------------------------------------
+
+void drawLightningScreen(
+  uint8_t distance,
+  uint32_t intensity
+)
+{
+  display.setFullWindow();
+
+  display.firstPage();
+
+  do
+  {
+    display.fillScreen(GxEPD_WHITE);
+
+    // Red warning title
+    display.setTextColor(GxEPD_RED);
+
+    display.setTextSize(2);
+
+    display.setCursor(20, 30);
+    display.print("LIGHTNING!");
+
+    // Divider
+    display.drawLine(
+      10,
+      40,
+      190,
+      40,
+      GxEPD_RED
+    );
+
+    // Distance
+    display.setTextColor(GxEPD_BLACK);
+
+    display.setTextSize(1);
+    display.setCursor(15, 65);
+    display.print("DISTANCE:");
+
+    display.setTextSize(3);
+    display.setCursor(15, 95);
+
+    if (distance >= 40)
+    {
+      display.print(">40");
+    }
+    else
+    {
+      display.print(distance);
+    }
+
+    display.print(" km");
+
+    // Strike count
+    display.setTextSize(1);
+    display.setCursor(15, 130);
+    display.print("STRIKE COUNT:");
+
+    display.setTextSize(2);
+    display.setCursor(15, 153);
+    display.print(strikeCount);
+
+    // Intensity
+    display.setTextSize(1);
+    display.setCursor(15, 178);
+    display.print("INTENSITY:");
+
+    display.print(intensity);
+
+    // Alert
+    display.setTextColor(GxEPD_RED);
+    display.setTextSize(1);
+    display.setCursor(15, 195);
+    display.print("STORM DETECTED");
+
+  }
+  while (display.nextPage());
+
+  display.hibernate();
+
+  lastDisplayUpdate = millis();
+}
+
+// --------------------------------------------------
+// SETUP
+// --------------------------------------------------
+
+void setup()
+{
+  Serial.begin(115200);
+
+  delay(1000);
+
+  Serial.println();
+  Serial.println("==============================");
+  Serial.println(" LIGHTNING STRIKE DETECTOR");
+  Serial.println("==============================");
+
+  // ------------------------------------------------
+  // OUTPUTS
+  // ------------------------------------------------
+
+  pinMode(LED_PIN, OUTPUT);
+  pinMode(BUZZER_PIN, OUTPUT);
+
+  digitalWrite(LED_PIN, LOW);
+  digitalWrite(BUZZER_PIN, LOW);
+
+  // ------------------------------------------------
+  // I2C
+  // ------------------------------------------------
+
+  Wire.begin(
+    SDA_PIN,
+    SCL_PIN
+  );
+
+  delay(100);
+
+  // ------------------------------------------------
+  // SPI
+  // ------------------------------------------------
+
+  SPI.begin(
+    EPD_SCK,
+    -1,
+    EPD_MOSI,
+    EPD_CS
+  );
+
+  // ------------------------------------------------
+  // E-PAPER
+  // ------------------------------------------------
+
+  Serial.println("Starting e-paper...");
+
+  display.init(
+    115200,
+    true,
+    2,
+    false
+  );
+
+  display.setRotation(0);
+
+  // ------------------------------------------------
+  // LIGHTNING SENSOR
+  // ------------------------------------------------
+
+  Serial.println("Starting SEN0290...");
+
+  while (lightningSensor.begin() != 0)
+  {
+    Serial.println(
+      "SEN0290 not detected!"
+    );
+
+    delay(1000);
+  }
+
+  Serial.println(
+    "SEN0290 detected!"
+  );
+
+  // Default sensor configuration
+  lightningSensor.defInit();
+
+  // Manual antenna calibration
+  lightningSensor.manualCal(
+    AS3935_CAPACITANCE,
+    AS3935_MODE,
+    AS3935_DIST
+  );
+
+  // Interrupt
+  pinMode(
+    LIGHTNING_IRQ,
+    INPUT
+  );
+
+  attachInterrupt(
+    digitalPinToInterrupt(LIGHTNING_IRQ),
+    lightningISR,
+    RISING
+  );
+
+  // ------------------------------------------------
+  // FIRST SCREEN
+  // ------------------------------------------------
+
+  drawNormalScreen();
+
+  Serial.println(
+    "System ready."
+  );
+}
+
+// --------------------------------------------------
+// LOOP
+// --------------------------------------------------
+
+void loop()
+{
+  // ------------------------------------------------
+  // CHECK LIGHTNING INTERRUPT
+  // ------------------------------------------------
+
+  if (lightningInterrupt)
+  {
+    delay(5);
+
+    lightningInterrupt = false;
+
+    uint8_t interruptSource =
+      lightningSensor.getInterruptSrc();
+
+    // ----------------------------------------------
+    // LIGHTNING
+    // ----------------------------------------------
+
+    if (interruptSource == 1)
+    {
+      uint8_t distance =
+        lightningSensor.getLightningDistKm();
+
+      uint32_t intensity =
+        lightningSensor.getStrikeEnergyRaw();
+
+      strikeCount++;
+
+      lastDistance = distance;
+      lastIntensity = intensity;
+
+      Serial.println();
+      Serial.println(
+        "!!! LIGHTNING DETECTED !!!"
+      );
+
+      Serial.print(
+        "Distance: "
+      );
+
+      Serial.print(distance);
+
+      Serial.println(" km");
+
+      Serial.print(
+        "Intensity: "
+      );
+
+      Serial.println(intensity);
+
+      Serial.print(
+        "Total strikes: "
+      );
+
+      Serial.println(strikeCount);
+
+      // --------------------------------------------
+      // IMMEDIATE ALARM
+      // --------------------------------------------
+
+      alarmActive = true;
+
+      alarmStart = millis();
+
+      beepBuzzer();
+
+      // --------------------------------------------
+      // DISPLAY
+      // --------------------------------------------
+
+      /*
+         Because the Waveshare 1.54" B V1
+         has a very slow full refresh,
+         don't refresh it for every event.
+
+         If enough time has passed,
+         show the alert.
+      */
+
+      if (
+        millis() - lastDisplayUpdate
+        >= DISPLAY_MIN_INTERVAL
+      )
+      {
+        drawLightningScreen(
+          distance,
+          intensity
+        );
+      }
+    }
+
+    // ----------------------------------------------
+    // DISTURBER
+    // ----------------------------------------------
+
+    else if (interruptSource == 2)
+    {
+      Serial.println(
+        "Disturber detected."
+      );
+    }
+
+    // ----------------------------------------------
+    // NOISE
+    // ----------------------------------------------
+
+    else if (interruptSource == 3)
+    {
+      Serial.println(
+        "Noise level too high."
+      );
+    }
+  }
+
+  // ------------------------------------------------
+  // TURN OFF ALARM AFTER 5 SECONDS
+  // ------------------------------------------------
+
+  if (
+    alarmActive &&
+    millis() - alarmStart > 5000
+  )
+  {
+    alarmActive = false;
+
+    digitalWrite(
+      LED_PIN,
+      LOW
+    );
+
+    digitalWrite(
+      BUZZER_PIN,
+      LOW
+    );
+  }
+
+  delay(10);
+}
