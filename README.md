@@ -1,5 +1,25 @@
 # Lightning-Detector
 Its a detector that can detect lightning strikes 
+
+| Component | Purpose | Qty | Cost (USD) | Distributor |
+|-----------|---------|-----|------------|-------------|
+| Seeed Studio XIAO ESP32S3 | Main controller of the project | 1 | $12.00 | Robu.in |
+| DFRobot Gravity Lightning Distance Sensor | Detects lightning activity | 1 | $25.00 | Robu.in |
+| Waveshare 1.54" E-Ink Display Module | Displays visual information | 1 | $20.00 | Amazon.in |
+| 3.7V 450mAh 1S LiPo Battery | Powers the project | 1 | $3.13 | Robu.in |
+| LiPo Charger with USB-C | Charges the LiPo battery | 1 | $3.00 | Robu.in |
+| CL7525A-CLDZ Passive Buzzer | Provides an audible warning | 1 | $1.00 | Robu.in |
+| BC547 SMD Transistor | Controls the warning circuit | 1 | $1.00 | Robu.in |
+| 0805 Red SMD LED | Provides a visual warning | 1 | $1.00 | Robu.in |
+| 330Ω SMD Resistor | Limits LED current | 1 | $1.00 | Robu.in |
+| 1kΩ SMD Resistor | Limits current | 1 | $1.00 | Robu.in |
+| SMD Slide Switch | Turns the project ON/OFF | 1 | $1.00 | Robu.in |
+| Custom PCB | Mounts and connects all components | 1 | $4.00 | JLCPCB |
+| Delivery Charges | Shipping costs | 1 | $12.00 | — |
+
+**💰 Total Estimated Cost: $90 USD**
+
+
 And with just few steps you can also able to build this and it might save your live
 to build this detector you need to get all the parts listed in the BOM and the PCB the gerber file is also given in the production file 
 
